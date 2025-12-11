@@ -5,6 +5,7 @@ import pandas_ta as ta
 import numpy as np
 from datetime import datetime
 import os
+import matplotlib.pyplot as plt
 
 # =========================
 # 讀取 stock.txt
@@ -219,4 +220,5 @@ if st.checkbox("顯示 MACD 圖"):
     plt.bar(df['date'], df['macd_hist'])
     plt.title("MACD")
     st.pyplot(fig_macd)
+
 
