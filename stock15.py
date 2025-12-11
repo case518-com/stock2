@@ -204,7 +204,7 @@ if st.checkbox("顯示 K 線 + 技術指標 圖表"):
 
 # RSI 圖
 if st.checkbox("顯示 RSI 圖"):
-    import matplotlib.pyplot as plt
+   # import matplotlib.pyplot as plt
     fig_rsi = plt.figure()
     plt.plot(df['date'], df['RSI_14'])
     plt.axhline(30)
@@ -220,5 +220,6 @@ if st.checkbox("顯示 MACD 圖"):
     plt.bar(df['date'], df['macd_hist'])
     plt.title("MACD")
     st.pyplot(fig_macd)
+
 
 
