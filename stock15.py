@@ -7,24 +7,16 @@ from datetime import datetime
 import os
 
 # =========================
-# 讀取 stock.txt
+# 內建股票清單（替代 stock.txt）
 # =========================
-def load_stock_list(filename="stock.txt"):
-    if not os.path.exists(filename):
-        print(f"找不到 {filename}")
-        return {}
-    stock_list = {}
-    with open(filename, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) == 1:
-                stock_list[parts[0]] = parts[0]
-            else:
-                stock_list[parts[0]] = " ".join(parts[1:])
-    return stock_list
+STOCK_LIST = {
+    "2603": "長榮",
+    "2609": "陽明",
+    "2615": "萬海",
+    # 你可以自己加，例如：
+    # "2330": "台積電",
+    # "2317": "鴻海",
+}
 
 # =========================
 # 基本設定（你選擇的參數）
@@ -175,58 +167,35 @@ def backtest_rules_full(df, lower_col):
     return stats
 
 # =========================
-# 計算目標價（全部以 MACD 的 avg_max_runup 作為基準，並打 8 折）
-# 公式： target = close * (1 + macd_avg_runup * 0.8)
-# macd_avg_runup 為小數（ex: 0.1909）
+# 目標價公式
 # =========================
 def compute_target_price_from_macd_avg(close, macd_avg_runup):
     return close * (1 + macd_avg_runup * 0.6)
 
 # =========================
-# 即時檢查（使用回測結果中的 MACD 平均最大漲幅）
+# 即時檢查
 # =========================
 def check_current_with_targets_using_macd(df, upper_col, lower_col, stats):
-    # 取 MACD avg_max_runup（小數）
-    macd_stats_entry = stats.get("MACD 直方圖拐頭") or stats.get("MACD") or {}
-    # If key name differs, try to compute from stats mapping:
-    macd_avg = None
-    if "MACD 直方圖拐頭" in stats:
-        macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
-    else:
-        # try find MACD-like key
-        for k in stats:
-            if "MACD" in k:
-                macd_avg = stats[k]["avg_max_runup_pct"] / 100.0
-                break
-    if macd_avg is None or macd_avg <= 0:
-        # 若 MACD 回測無樣本或非正向，回傳空（當天不列出）
+    if "MACD 直方圖拐頭" not in stats:
         return []
-
+    macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
+    if macd_avg <= 0:
+        return []
     i = len(df) - 1
     close = df["close"].iloc[i]
     matched = []
-
     if rule_kd_low_cross(df, i):
-        tp = compute_target_price_from_macd_avg(close, macd_avg)
-        matched.append(f"KD 低檔黃金交叉 | 潛在目標價 {tp:.2f}")
-
+        matched.append(f"KD 低檔黃金交叉 | 潛在目標價 {compute_target_price_from_macd_avg(close, macd_avg):.2f}")
     if rule_rsi_oversold_rebound(df, i):
-        tp = compute_target_price_from_macd_avg(close, macd_avg)
-        matched.append(f"RSI 超賣翻升 | 潛在目標價 {tp:.2f}")
-
+        matched.append(f"RSI 超賣翻升 | 潛在目標價 {compute_target_price_from_macd_avg(close, macd_avg):.2f}")
     if rule_macd_turning_up(df, i):
-        tp = compute_target_price_from_macd_avg(close, macd_avg)
-        matched.append(f"MACD 直方圖拐頭 | 潛在目標價 {tp:.2f}")
-
+        matched.append(f"MACD 直方圖拐頭 | 潛在目標價 {compute_target_price_from_macd_avg(close, macd_avg):.2f}")
     if rule_bollinger_lower_rebound(df, lower_col, i):
-        tp = compute_target_price_from_macd_avg(close, macd_avg)
-        matched.append(f"布林下軌反彈 | 潛在目標價 {tp:.2f}")
-
+        matched.append(f"布林下軌反彈 | 潛在目標價 {compute_target_price_from_macd_avg(close, macd_avg):.2f}")
     return matched
 
 # =========================
-# 排序：你選 B=3 => 以觸發次數由多到少排序輸出回測結果
-# 若同交易次數則以勝率再排序
+# 規則排序 B=3
 # =========================
 def rank_rules_by_trades(stats_dict):
     items = []
@@ -238,18 +207,13 @@ def rank_rules_by_trades(stats_dict):
             "avg_max_runup_pct": s["avg_max_runup_pct"],
             "avg_final_return_pct": s["avg_final_return_pct"]
         })
-    # sort by trades desc, then win_rate desc, then avg_max_runup desc
-    ranked = sorted(items, key=lambda x: (x["trades"], x["win_rate_pct"], x["avg_max_runup_pct"]), reverse=True)
-    return ranked
+    return sorted(items, key=lambda x: (x["trades"], x["win_rate_pct"], x["avg_max_runup_pct"]), reverse=True)
 
 # =========================
 # 主程式
 # =========================
 if __name__ == "__main__":
-    stock_list = load_stock_list("stock.txt")
-    if not stock_list:
-        print("stock.txt 無股票清單或檔案不存在。")
-        raise SystemExit
+    stock_list = STOCK_LIST   # ← 不再讀 stock.txt
 
     for sid, name in stock_list.items():
         df = get_stock_data(sid)
@@ -260,30 +224,19 @@ if __name__ == "__main__":
         if upper_col is None or lower_col is None or len(df) < MIN_BARS:
             continue
 
-        # 回測（完整統計）
         stats = backtest_rules_full(df, lower_col)
 
-        # 取得 MACD 的 avg_max_runup（小數）
-        macd_avg = None
-        if "MACD 直方圖拐頭" in stats:
-            macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
-        else:
-            # fallback
-            for k in stats:
-                if "MACD" in k:
-                    macd_avg = stats[k]["avg_max_runup_pct"] / 100.0
-                    break
-
-        # 若 MACD 平均最大漲幅 <= 0，視為不列出（保守）
-        if macd_avg is None or macd_avg <= 0:
+        if "MACD 直方圖拐頭" not in stats:
             continue
 
-        # 即時規則（使用 MACD avg 計算所有目標價）
+        macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
+        if macd_avg <= 0:
+            continue
+
         current = check_current_with_targets_using_macd(df, upper_col, lower_col, stats)
         if not current:
             continue
 
-        # 輸出區塊
         print("="*60)
         print(f"{name} ({sid}) 最新日期 {df['date'].iloc[-1]}")
         print(f"收盤價: {df['close'].iloc[-1]:.2f}\n")
@@ -293,17 +246,14 @@ if __name__ == "__main__":
             print(f"- {c}")
         print("")
 
-        # 規則回測結果（按觸發次數由多到少排序）
         ranked = rank_rules_by_trades(stats)
         print("— 規則回測結果 —")
         for r in ranked:
             print(f"- {r['rule']} | 觸發次數: {r['trades']} | 勝率: {r['win_rate_pct']:.2f}% | 平均最大漲幅: {r['avg_max_runup_pct']:.2f}% | 平均最終報酬: {r['avg_final_return_pct']:.2f}%")
 
-        # 最佳規則（觸發次數最高者）
         if ranked:
             best = ranked[0]
             print("\n— 最佳規則 —")
             print(f"{best['rule']} | 勝率 {best['win_rate_pct']:.2f}% | 平均最大漲幅 {best['avg_max_runup_pct']:.2f}% | 觸發 {best['trades']} 次")
 
-        # 顯示 MACD 用於計算的平均最大漲幅
         print(f"\nMACD 用於目標價計算的平均最大漲幅: {macd_avg*100:.2f}%")
