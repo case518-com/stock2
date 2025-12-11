@@ -1,4 +1,3 @@
-# Streamlit
 import streamlit as st
 import requests
 import pandas as pd
@@ -174,3 +173,50 @@ else:
 
             st.subheader("📊 規則回測結果")
             st.dataframe(pd.DataFrame(stats).T)
+
+# ==============================
+# 🎨 新增：UI 參數調整 + 技術圖表
+# ==============================
+
+# 回測參數調整區
+st.sidebar.header("回測參數設定")
+lookahead_days = st.sidebar.slider("回測觀察天數 (Lookahead)", 10, 120, 30)
+win_threshold = st.sidebar.slider("勝率判定門檻 (%)", 1, 20, 5) / 100
+
+# K 線圖顯示
+if st.checkbox("顯示 K 線 + 技術指標 圖表"):
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df['date'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='K線'
+    ))
+    fig.add_trace(go.Scatter(x=df['date'], y=df['ema12'], mode='lines', name='EMA12'))
+    fig.add_trace(go.Scatter(x=df['date'], y=df['ema26'], mode='lines', name='EMA26'))
+
+    st.plotly_chart(fig, use_container_width=True)
+
+# RSI 圖
+if st.checkbox("顯示 RSI 圖"):
+    import matplotlib.pyplot as plt
+    fig_rsi = plt.figure()
+    plt.plot(df['date'], df['RSI_14'])
+    plt.axhline(30)
+    plt.axhline(70)
+    plt.title("RSI 指標")
+    st.pyplot(fig_rsi)
+
+# MACD 圖
+if st.checkbox("顯示 MACD 圖"):
+    fig_macd = plt.figure()
+    plt.plot(df['date'], df['macd_line'])
+    plt.plot(df['date'], df['macd_signal'])
+    plt.bar(df['date'], df['macd_hist'])
+    plt.title("MACD")
+    st.pyplot(fig_macd)
+
