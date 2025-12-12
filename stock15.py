@@ -1,41 +1,22 @@
-# stock14.py  (股票清單改成寫在程式裡，不讀 stock.txt)
-
+import streamlit as st
 import requests
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
 from datetime import datetime
 
-# =========================
-# 直接寫死股票清單
-# =========================
-STOCK_LIST = {
-    "2330": "台積電",
-    "2603": "長榮",
-    "2609": "陽明",
-}
-
-# =========================
-# 基本設定
-# =========================
+# 原有參數
 START_DATE = "2024-01-01"
 END_DATE = datetime.today().strftime("%Y-%m-%d")
-
-WIN_THRESHOLD_PCT = 0.05   # +5% 判定勝利
+WIN_THRESHOLD_PCT = 0.05
 LOOKAHEAD_DAYS = 30
 MIN_BARS = 30
 
-# =========================
-# 抓台股資料
-# =========================
+# 取得股價
+
 def get_stock_data(stock_id, start_date=START_DATE, end_date=END_DATE):
     url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
-        "dataset": "TaiwanStockPrice",
-        "data_id": stock_id,
-        "start_date": start_date,
-        "end_date": end_date
-    }
+    params = {"dataset": "TaiwanStockPrice", "data_id": stock_id, "start_date": start_date, "end_date": end_date}
     try:
         res = requests.get(url, params=params, timeout=15).json()
     except Exception:
@@ -51,19 +32,18 @@ def get_stock_data(stock_id, start_date=START_DATE, end_date=END_DATE):
         "max": "high",
         "min": "low",
         "close": "close",
-        "date": "date"
+        "date": "date",
     }
     df = df.rename(columns=rename_map)
 
     for c in ["open", "high", "low", "close", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    df = df.dropna(subset=["open", "high", "low", "close", "volume"]).reset_index(drop=True)
+    df = df.dropna().reset_index(drop=True)
     return df
 
-# =========================
-# 加指標
-# =========================
+# 指標
+
 def add_indicators(df):
     if df.empty or len(df) < MIN_BARS:
         return df, None, None
@@ -85,164 +65,159 @@ def add_indicators(df):
 
     return df, upper, lower
 
-# =========================
-# 規則定義
-# =========================
-def rule_kd_low_cross(df, i):
-    if i < 1:
-        return False
-    k_prev = df["STOCHk_14_3_3"].iloc[i-1]
-    d_prev = df["STOCHd_14_3_3"].iloc[i-1]
-    k = df["STOCHk_14_3_3"].iloc[i]
-    d = df["STOCHd_14_3_3"].iloc[i]
-    return (k_prev < d_prev) and (k > d) and (k < 20) and (d < 20)
+# 技術規則
 
-def rule_rsi_oversold_rebound(df, i):
+def rule_kd_low(df, i):
     if i < 1:
-        return False
-    r_prev = df["RSI_14"].iloc[i-1]
-    r = df["RSI_14"].iloc[i]
-    return (r < 30) and (r > r_prev)
-
-def rule_macd_turning_up(df, i):
-    if i < 1:
-        return False
-    h_prev = df["macd_hist"].iloc[i-1]
-    h = df["macd_hist"].iloc[i]
-    return (h_prev < 0 and h >= 0) or (h_prev < 0 and h > h_prev)
-
-def rule_bollinger_lower_rebound(df, lower_col, i):
-    if i < 1 or lower_col is None:
         return False
     return (
-        df["close"].iloc[i-1] < df[lower_col].iloc[i-1] and
-        df["close"].iloc[i] > df[lower_col].iloc[i]
+        df["STOCHk_14_3_3"].iloc[i-1] < df["STOCHd_14_3_3"].iloc[i-1]
+        and df["STOCHk_14_3_3"].iloc[i] > df["STOCHd_14_3_3"].iloc[i]
+        and df["STOCHk_14_3_3"].iloc[i] < 20
+        and df["STOCHd_14_3_3"].iloc[i] < 20
     )
 
-# =========================
+def rule_rsi(df, i):
+    if i < 1:
+        return False
+    return df["RSI_14"].iloc[i] > df["RSI_14"].iloc[i-1] and df["RSI_14"].iloc[i] < 30
+
+def rule_macd(df, i):
+    return i>0 and df["macd_hist"].iloc[i-1] < 0 <= df["macd_hist"].iloc[i]
+
+def rule_boll(df, lower, i):
+    if i < 1 or lower is None:
+        return False
+    return df["close"].iloc[i-1] < df[lower].iloc[i-1] and df["close"].iloc[i] > df[lower].iloc[i]
+
 # 回測
-# =========================
-def evaluate_entry_runup_and_final(df, i):
+
+def evaluate_entry(df, i):
     entry = df["close"].iloc[i]
-    end_index = min(i + LOOKAHEAD_DAYS, len(df) - 1)
-    seg = df.iloc[i+1:end_index+1]
+    end_i = min(i + LOOKAHEAD_DAYS, len(df) - 1)
+    seg = df.iloc[i+1:end_i+1]
     if seg.empty:
         return None, None
+    max_run = (seg["high"].max() - entry) / entry
+    final = (seg["close"].iloc[-1] - entry) / entry
+    return max_run, final
 
-    max_price = seg["high"].max()
-    max_runup = (max_price - entry) / entry
-    final_return = (seg["close"].iloc[-1] - entry) / entry
-    return max_runup, final_return
 
-def backtest_rules_full(df, lower_col):
+def backtest(df, lower):
     rules = {
-        "RSI 超賣翻升": lambda i: rule_rsi_oversold_rebound(df, i),
-        "布林下軌反彈": lambda i: rule_bollinger_lower_rebound(df, lower_col, i),
-        "MACD 直方圖拐頭": lambda i: rule_macd_turning_up(df, i),
-        "KD 低檔黃金交叉": lambda i: rule_kd_low_cross(df, i),
+        "RSI 超賣翻升": lambda i: rule_rsi(df, i),
+        "布林下軌反彈": lambda i: rule_boll(df, lower, i),
+        "MACD 直方圖拐頭": lambda i: rule_macd(df, i),
+        "KD 低檔黃金交叉": lambda i: rule_kd_low(df, i),
     }
-
     stats = {}
-    for name, rule_fn in rules.items():
+    for name, fn in rules.items():
         trades = wins = 0
-        runups, finals = [], []
-
+        runups = []
+        finals = []
+        trig = []
         for i in range(MIN_BARS, len(df)-1):
-            if rule_fn(i):
-                trades += 1
-                max_run, final_ret = evaluate_entry_runup_and_final(df, i)
-                if max_run is None:
-                    continue
+            if not fn(i): continue
+            trades += 1
+            trig.append(df["date"].iloc[i])
 
-                runups.append(max_run)
-                finals.append(final_ret)
-
-                if max_run >= WIN_THRESHOLD_PCT:
-                    wins += 1
+            max_r, final_r = evaluate_entry(df, i)
+            if max_r is None: continue
+            runups.append(max_r)
+            finals.append(final_r)
+            if max_r >= WIN_THRESHOLD_PCT: wins += 1
 
         stats[name] = {
             "trades": trades,
             "wins": wins,
-            "win_rate_pct": (wins / trades * 100) if trades > 0 else 0,
-            "avg_max_runup_pct": (np.mean(runups) * 100) if runups else 0,
-            "avg_final_return_pct": (np.mean(finals) * 100) if finals else 0,
+            "win_rate_pct": wins/trades*100 if trades else 0,
+            "avg_max_runup_pct": np.mean(runups)*100 if runups else 0,
+            "avg_final_return_pct": np.mean(finals)*100 if finals else 0,
+            "trigger_dates": trig,
         }
-
     return stats
 
-# =========================
 # 目標價
-# =========================
-def compute_target_price(close, macd_avg):
+
+def compute_tp(close, macd_avg):
     return close * (1 + macd_avg * 0.6)
 
-def check_current(df, lower_col, stats):
-    macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
-    if macd_avg <= 0:
-        return []
+
+def check_current(df, upper, lower, stats):
+    macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100
+    if macd_avg <= 0: return []
 
     i = len(df) - 1
     close = df["close"].iloc[i]
-    matched = []
+    out = []
 
-    rules = [
-        ("KD 低檔黃金交叉", rule_kd_low_cross),
-        ("RSI 超賣翻升", rule_rsi_oversold_rebound),
-        ("MACD 直方圖拐頭", rule_macd_turning_up),
-        ("布林下軌反彈", lambda df, i: rule_bollinger_lower_rebound(df, lower_col, i)),
-    ]
+    if rule_kd_low(df, i): out.append(("KD 低檔黃金交叉", compute_tp(close, macd_avg)))
+    if rule_rsi(df, i): out.append(("RSI 超賣翻升", compute_tp(close, macd_avg)))
+    if rule_macd(df, i): out.append(("MACD 直方圖拐頭", compute_tp(close, macd_avg)))
+    if rule_boll(df, lower, i): out.append(("布林下軌反彈", compute_tp(close, macd_avg)))
 
-    for name, rule_fn in rules:
-        if rule_fn(df, i):
-            tp = compute_target_price(close, macd_avg)
-            matched.append(f"{name} | 潛在目標價 {tp:.2f}")
+    return out
 
-    return matched
+# 排序
 
-# =========================
-# 主程式
-# =========================
-if __name__ == "__main__":
-    for sid, name in STOCK_LIST.items():
+def rank_stats(stats):
+    return sorted(stats.items(), key=lambda x:(x[1]["trades"], x[1]["win_rate_pct"], x[1]["avg_max_runup_pct"]), reverse=True)
+
+
+# ============================== Streamlit UI ==============================
+st.title("📈 多股票技術分析 + 回測系統 (Streamlit)")
+
+user_input = st.sidebar.text_input("請輸入股票代號（用逗號分隔）", "2330,2603,2317")
+run_btn = st.sidebar.button("開始分析")
+
+if run_btn:
+    stock_ids = [s.strip() for s in user_input.split(",") if s.strip()]
+
+    for sid in stock_ids:
+        st.header(f"📌 股票 {sid}")
+
         df = get_stock_data(sid)
         if df.empty:
+            st.error("⚠️ 抓不到資料")
             continue
 
-        df, upper_col, lower_col = add_indicators(df)
-        if lower_col is None or len(df) < MIN_BARS:
+        df, upper, lower = add_indicators(df)
+        if lower is None or len(df) < MIN_BARS:
+            st.warning("資料不足")
             continue
 
-        stats = backtest_rules_full(df, lower_col)
+        stats = backtest(df, lower)
+        macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100
+        current = check_current(df, upper, lower, stats)
 
-        macd_avg = stats["MACD 直方圖拐頭"]["avg_max_runup_pct"] / 100.0
-        if macd_avg <= 0:
-            continue
+        st.subheader(f"最新日期：{df['date'].iloc[-1]}")
+        st.write(f"收盤價：{df['close'].iloc[-1]:.2f}")
 
-        current = check_current(df, lower_col, stats)
-        if not current:
-            continue
+        # ------ 最新 K 線規則 ------
+        st.markdown("### 🔍 最新一根K線規則（目標價 = MACD 回測 × 0.6）")
+        if current:
+            for rule, tp in current:
+                last_date = stats[rule]["trigger_dates"][-1] if stats[rule]["trigger_dates"] else "無"
+                st.write(f"- **{rule}** | 目標價：{tp:.2f} | 最後觸發：{last_date}")
+        else:
+            st.write("（本日無規則觸發）")
 
-        print("="*60)
-        print(f"{name} ({sid}) 最新日期 {df['date'].iloc[-1]}")
-        print(f"收盤價: {df['close'].iloc[-1]:.2f}\n")
+        # ------ 回測結果 ------
+        st.markdown("### 📊 回測結果")
+        ranked = rank_stats(stats)
 
-        print("— 最新一根K線規則 —")
-        for c in current:
-            print(f"- {c}")
-        print("")
+        df_table = []
+        for name, s in ranked:
+            last_dates = ", ".join(s["trigger_dates"][-3:]) if s["trigger_dates"] else "無"
+            df_table.append([
+                name,
+                s["trades"],
+                f"{s['win_rate_pct']:.2f}%",
+                f"{s['avg_max_runup_pct']:.2f}%",
+                f"{s['avg_final_return_pct']:.2f}%",
+                last_dates,
+            ])
 
-        ranked = sorted(
-            stats.items(),
-            key=lambda x: (x[1]["trades"], x[1]["win_rate_pct"], x[1]["avg_max_runup_pct"]),
-            reverse=True
-        )
+        st.table(pd.DataFrame(df_table, columns=["規則","觸發次數","勝率","平均最大漲幅","平均最終報酬","觸發日期（最後3筆）"]))
 
-        print("— 規則回測結果 —")
-        for rule, s in ranked:
-            print(f"- {rule} | 觸發 {s['trades']} | 勝率 {s['win_rate_pct']:.2f}% | 平均最大漲幅 {s['avg_max_runup_pct']:.2f}%")
-
-        best = ranked[0]
-        print("\n— 最佳規則 —")
-        print(f"{best[0]} | 勝率 {best[1]['win_rate_pct']:.2f}% | 平均最大漲幅 {best[1]['avg_max_runup_pct']:.2f}%")
-
-        print(f"\nMACD 用於目標價計算的平均最大漲幅: {macd_avg*100:.2f}%")
+        st.write(f"**MACD 平均最大漲幅：{macd_avg*100:.2f}%**")
